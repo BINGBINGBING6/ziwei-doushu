@@ -1,37 +1,49 @@
 import { NextResponse } from 'next/server';
-import { getAstrologyAstrolabe } from '@/lib/ziwei/algorithm';
-import { getPatterns } from '@/lib/ziwei/patterns';
+// 1. 正确导入排盘核心引擎
+import { generateChart } from '@/lib/ziwei/algorithm';
+// 2. 正确导入格局分析与命宫摘要大师
+import { detectPatterns, getMingGongSummary } from '@/lib/ziwei/patterns';
 
 export async function POST(request: Request) {
   try {
-    const { solarDateStr, gender, targetYear } = await request.json();
+    const body = await request.json();
+    const { year, month, day, hour, gender, target_year } = body;
     
-    // 1. 获取核心命盘
-    const astrolabe = getAstrologyAstrolabe(solarDateStr, gender);
-    
-    // 2. 获取大师级格局判断
-    const patterns = getPatterns(astrolabe);
-    
-    // 3. 为“测算时间”量身定制：提取流年（预测年份）的数据
-    // 如果用户传了目标年份（如2026），就去命盘里找那一年的运势宫位
-    let yearlyData = null;
-    if (targetYear) {
-        const yearStr = targetYear.toString();
-        // 获取流年宫位，包含那一年的四化星等重要信息
-        yearlyData = astrolabe.palaces.find(p => p.decadal?.year === yearStr || p.name.includes(yearStr));
-    }
+    // 处理性别参数 (底层算法需要英文的 'male' 或 'female')
+    const mappedGender = (gender === '男' || gender === 'male') ? 'male' : 'female';
 
-    // 4. 精简返回给大模型的数据
+    // 调用核心算法生成原始命盘
+    const chart = generateChart({
+      year: Number(year),
+      month: Number(month),
+      day: Number(day),
+      hour: Number(hour),
+      gender: mappedGender
+    });
+    
+    // 获取倪海夏体系的核心格局与命宫摘要
+    const patterns = detectPatterns(chart);
+    const mingGong = getMingGongSummary(chart);
+
+    // 精简返回给大模型（AI）的数据，提取精华，去掉冗余代码防超载
     const result = {
-      bazi: astrolabe.chineseDate,
-      five_elements: astrolabe.fiveElementsClass,
-      destiny_palace: astrolabe.palaces.find(p => p.isDestiny),
-      patterns: patterns, // 极其重要的格局
-      target_year_luck: yearlyData // 预测事件发生时间的核心依据
+      lunar_info: chart.lunarInfo,
+      wuxing_ju: chart.wuxingJuName, // 五行局（如水二局）
+      ming_gong_core: mingGong, // 命宫精简结论（星曜、关键字、特性）
+      patterns: patterns, // 触发的核心格局（AI 断大吉/大凶的依据）
+      // 列出12宫，供 AI 结合 target_year 推断应期
+      palaces: chart.palaces.map(p => ({
+        name: p.name, // 宫位名称（如夫妻宫、财帛宫）
+        stars: p.stars.map(s => `${s.name}(${s.type})`), // 星曜分布
+        daxian_age: p.daXianAge // 该宫位对应的大限年龄段
+      })),
+      target_year: target_year // 用户询问的具体年份
     };
 
     return NextResponse.json({ success: true, data: result });
+    
   } catch (error) {
-    return NextResponse.json({ success: false, error: '排盘出错，请检查输入格式' }, { status: 500 });
+    console.error("排盘错误:", error);
+    return NextResponse.json({ success: false, error: '排盘失败，请检查输入的参数格式' }, { status: 500 });
   }
 }
